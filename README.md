@@ -53,10 +53,10 @@ Edita el cron en el workflow:
 
 ```yaml
 schedule:
-  - cron: '*/30 * * * *'  # Cada 30 minutos
-  # - cron: '*/60 * * * *'  # Cada hora
-  # - cron: '0 */2 * * *'   # Cada 2 horas
+  - cron: '0 9 * * *'  # Diario a las 9 AM (hora Ciudad de México)
+  # - cron: '0 */6 * * *'  # Cada 6 horas
   # - cron: '0 8,12,18 * * *'  # 3 veces al día
+  # - cron: '0 9 * * 1-5'  # Solo lunes a viernes
 ```
 
 ## Ejecutar localmente
