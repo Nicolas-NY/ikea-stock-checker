@@ -16,9 +16,6 @@ on:
         type: boolean
 
 env:
-  IKEA_ITEM_NUMBER: '20601053'
-  IKEA_PRODUCT_NAME: 'RÅDMANSÖ Base de cama King'
-  IKEA_PRODUCT_URL: 'https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/'
   NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
 
 jobs:

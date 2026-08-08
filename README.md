@@ -2,11 +2,14 @@
 
 Monitorea la disponibilidad de productos IKEA México y recibe notificaciones cuando haya stock.
 
-## Producto Monitoreado
+## Productos Monitoreados
 
-- **RÅDMANSÖ Base de cama King** (café efecto nogal)
-- Artículo: 20601053
-- [Ver en IKEA México](https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/)
+| Producto | Artículo | Enlace |
+|----------|----------|--------|
+| RÅDMANSÖ Base de cama King (café efecto nogal) | 20601053 | [Ver](https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/) |
+| RÅDMANSÖ Mueble de TV (café efecto nogal) | 80598986 | [Ver](https://www.ikea.com/mx/es/p/radmansoe-mueble-de-tv-cafe-efecto-nogal-80598986/) |
+
+> **¿Quieres agregar o quitar productos?** Edita el archivo `products.json` con el número de artículo y nombre de cada producto.
 
 ## Configuración
 
@@ -38,14 +41,21 @@ Ve a **Actions > IKEA Stock Checker > Run workflow** para verificar manualmente.
 
 ### Cambiar el producto
 
-Edita las variables en `.github/workflows/ikea-stock.yml`:
+Edita `products.json` — puedes tener todos los productos que quieras:
 
-```yaml
-env:
-  IKEA_ITEM_NUMBER: 'TU_NUMERO_DE_ARTICULO'
-  IKEA_PRODUCT_NAME: 'NOMBRE DEL PRODUCTO'
-  IKEA_PRODUCT_URL: 'URL_DEL_PRODUCTO'
+```json
+{
+  "products": [
+    {
+      "item_number": "20601053",
+      "name": "RÅDMANSÖ Base de cama King",
+      "url": "https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/"
+    }
+  ]
+}
 ```
+
+El `item_number` sale del final de la URL del producto en ikea.com.
 
 ### Cambiar la frecuencia
 
@@ -81,7 +91,8 @@ El script guarda un historial en `stock_log.jsonl` con cada verificación.
 
 ```
 ikea-stock-checker/
-├── check_stock.py              # Script principal
+├── check_stock.py              # Script principal (multi-producto)
+├── products.json               # Lista de productos a monitorear
 ├── requirements.txt            # Dependencias Python
 ├── .github/
 │   └── workflows/
@@ -102,6 +113,6 @@ ikea-stock-checker/
 - El workflow fallará silenciosamente y reintentará en la siguiente ejecución
 
 ### Quiero agregar otro producto
-1. Busca el número de artículo en la URL del producto en IKEA
-2. Actualiza las variables de entorno en el workflow
-3. Crea un segundo workflow o modifica el script para múltiples productos
+1. Busca el número de artículo en la URL del producto en IKEA (el número al final)
+2. Agrégalo al archivo `products.json`
+3. Haz commit y push — el workflow se actualiza automáticamente

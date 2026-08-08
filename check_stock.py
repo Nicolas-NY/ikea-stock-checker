@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 IKEA Mexico Stock Checker
-Checks product availability and sends notifications via ntfy.sh
+Checks product availability for multiple products and sends notifications via ntfy.sh
 """
 
 import requests
@@ -11,19 +11,12 @@ import sys
 from datetime import datetime
 
 # === CONFIGURATION ===
-# Set these as GitHub Secrets or environment variables
-PRODUCT_URL = os.environ.get(
-    "IKEA_PRODUCT_URL",
-    "https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/"
-)
-ITEM_NUMBER = os.environ.get("IKEA_ITEM_NUMBER", "20601053")
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PRODUCTS_FILE = os.environ.get("IKEA_PRODUCTS_FILE", os.path.join(SCRIPT_DIR, "products.json"))
 NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "ikea-stock-radman")
 NTFY_TOKEN = os.environ.get("NTFY_TOKEN", "")  # Optional: for private topics
-PRODUCT_NAME = os.environ.get("IKEA_PRODUCT_NAME", "RÅDMANSÖ Base de cama King")
 
 # === ENDPOINTS ===
-FRAGMENT_URL = f"https://www.ikea.com/mx/es/lower-funnel-fragments/product-availability/?itemNo={ITEM_NUMBER}&inline"
-INGKA_API_URL = f"https://api.salesitem.ingka.com/cia/availabilities/ru/mx?itemNos={ITEM_NUMBER}"
 NTFY_URL = f"https://ntfy.sh/{NTFY_TOPIC}"
 
 # Headers to mimic browser request (no Accept-Encoding to get plain text)
@@ -36,13 +29,34 @@ HEADERS = {
 }
 
 
-def fetch_availability():
-    """Fetch stock availability from IKEA's product-availability fragment endpoint."""
-    print(f"[{datetime.now()}] Checking stock for {PRODUCT_NAME} (item: {ITEM_NUMBER})...")
+def load_products():
+    """Load product list from config file."""
+    try:
+        with open(PRODUCTS_FILE, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        products = config.get("products", [])
+        if not products:
+            print(f"  ERROR: No products found in {PRODUCTS_FILE}")
+            return []
+        print(f"  ✓ Loaded {len(products)} products from {PRODUCTS_FILE}")
+        return products
+    except (IOError, json.JSONDecodeError) as e:
+        print(f"  ERROR loading products file {PRODUCTS_FILE}: {e}")
+        return []
+
+
+def fetch_availability(product):
+    """Fetch stock availability for a single product."""
+    item_number = product["item_number"]
+    name = product["name"]
+    fragment_url = f"https://www.ikea.com/mx/es/lower-funnel-fragments/product-availability/?itemNo={item_number}&inline"
+    ingka_api_url = f"https://api.salesitem.ingka.com/cia/availabilities/ru/mx?itemNos={item_number}"
+    
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Checking {name} (item: {item_number})...")
     
     # Method 1: Fragment endpoint (returns full page with embedded JSON)
     try:
-        resp = requests.get(FRAGMENT_URL, headers=HEADERS, timeout=30)
+        resp = requests.get(fragment_url, headers=HEADERS, timeout=30)
         resp.raise_for_status()
         
         html = resp.text
@@ -73,15 +87,13 @@ def fetch_availability():
     }
     
     try:
-        resp = requests.get(INGKA_API_URL, headers=ingka_headers, timeout=30)
+        resp = requests.get(ingka_api_url, headers=ingka_headers, timeout=30)
         resp.raise_for_status()
         data = resp.json()
         
-        # Convert Ingka API response to our expected format
         if "availabilities" in data and data["availabilities"]:
             avail = data["availabilities"][0]
-            # Transform to our format
-            return transform_ingka_response(avail)
+            return transform_ingka_response(avail, product)
     except requests.RequestException as e:
         print(f"  Ingka API error: {e}")
     except (KeyError, IndexError) as e:
@@ -91,14 +103,18 @@ def fetch_availability():
     return None
 
 
-def transform_ingka_response(avail):
+def transform_ingka_response(avail, product):
     """Transform Ingka API response to our expected format."""
-    # This is a simplified transform - adapt based on actual API response
-    return {
+    item_number = product["item_number"]
+    name = product["name"]
+    
+    # Parse the Ingka response structure
+    # avail looks like: {"buyingOption": {...}, "classUnitKey": {...}, ...}
+    result = {
         "product": {
-            "itemNo": ITEM_NUMBER,
-            "name": PRODUCT_NAME.split(" ")[0] if PRODUCT_NAME else "RÅDMANSÖ",
-            "typeName": "Base de cama",
+            "itemNo": item_number,
+            "name": name,
+            "typeName": "",
             "price": 0,
             "currencyCode": "MXN",
         },
@@ -113,22 +129,43 @@ def transform_ingka_response(avail):
             }
         }
     }
+    
+    # Parse buyingOption for cashCarry / homeDelivery availability
+    buying = avail.get("buyingOption", {})
+    
+    # cashCarry (in-store)
+    cash = buying.get("cashCarry", {})
+    if cash.get("availability", {}).get("probability", {}).get("thisDay", {}).get("messageType"):
+        msg_type = cash["availability"]["probability"]["thisDay"]["messageType"]
+        quantity = cash.get("availability", {}).get("quantity", 0)
+        store_id = avail.get("classUnitKey", {}).get("classUnitCode", "UNKNOWN")
+        result["availabilityResponse"]["availability"]["stores"][store_id] = {
+            "in_stock": msg_type != "OUT_OF_STOCK",
+            "status": msg_type,
+            "quantity": quantity,
+            "cash_carry": True,
+            "click_collect": False,
+            "restock_dates": [],
+        }
+    
+    return result
 
 
-def analyze_stock(data):
+def analyze_stock(data, product):
     """Analyze stock availability from the parsed response."""
     if not data:
         return None
     
-    product = data.get("product", {})
+    product_data = data.get("product", {})
     availability = data.get("availabilityResponse", {}).get("availability", {})
     
     result = {
-        "product_name": product.get("name", PRODUCT_NAME),
-        "product_type": product.get("typeName", ""),
-        "price": product.get("price", 0),
-        "currency": product.get("currencyCode", "MXN"),
-        "item_number": product.get("itemNo", ITEM_NUMBER),
+        "product_name": product.get("name", product_data.get("name", "IKEA Product")),
+        "product_type": product_data.get("typeName", ""),
+        "price": product_data.get("price", 0),
+        "currency": product_data.get("currencyCode", "MXN"),
+        "item_number": product_data.get("itemNo", product["item_number"]),
+        "url": product["url"],
         "is_online_sellable": availability.get("isOnlineSellable", False),
         "is_sold_out": availability.get("isSoldOut", False),
         "is_sold_out_online": availability.get("isSoldOutOnline", False),
@@ -196,79 +233,92 @@ def analyze_stock(data):
 def format_message(result):
     """Format a notification message from the result."""
     if not result:
-        return f"❌ Error al verificar {PRODUCT_NAME}"
+        return None
     
-    product = f"{result['product_name']} {result['product_type']}"
-    price = f"${result['price']:,.0f} {result['currency']}"
-    timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+    product = result["product_name"]
+    price = f"${result['price']:,.0f} {result['currency']}" if result["price"] else ""
+    
+    lines = []
     
     if result["any_in_stock"]:
-        msg = f"🎉 ¡STOCK DISPONIBLE! 🎉\n\n"
-        msg += f"📦 {product}\n"
-        msg += f"💰 {price}\n"
-        msg += f"🕐 {timestamp}\n\n"
+        lines.append(f"🎉 ¡STOCK DISPONIBLE! 🎉")
+        lines.append(f"📦 {product}")
+        if price:
+            lines.append(f"💰 {price}")
+        lines.append("")
         
         # Online
         if result["is_online_sellable"] or not result["is_sold_out_online"]:
-            msg += "✅ Compra en línea: DISPONIBLE\n"
+            lines.append("✅ Compra en línea: DISPONIBLE")
         else:
-            msg += "❌ Compra en línea: Agotado\n"
+            lines.append("❌ Compra en línea: Agotado")
         
         # Home delivery
         if result["home_delivery"]["available"]:
-            msg += f"🚚 Envío a domicilio: DISPONIBLE\n"
+            lines.append(f"🚚 Envío a domicilio: DISPONIBLE")
         else:
-            msg += f"🚚 Envío a domicilio: No disponible\n"
+            lines.append(f"🚚 Envío a domicilio: No disponible")
         
         # Click & collect
         if result["click_collect"]["available"]:
-            msg += "🏪 Click & Collect: DISPONIBLE\n"
+            lines.append("🏪 Click & Collect: DISPONIBLE")
         else:
-            msg += "🏪 Click & Collect: No disponible\n"
+            lines.append("🏪 Click & Collect: No disponible")
         
         # Stores with stock
         stores_in_stock = [
             sid for sid, s in result["stores"].items() if s["in_stock"]
         ]
         if stores_in_stock:
-            msg += f"\n📍 Tiendas con stock: {', '.join(stores_in_stock)}\n"
+            lines.append(f"\n📍 Tiendas con stock: {', '.join(stores_in_stock)}")
         
-        msg += f"\n🔗 {PRODUCT_URL}"
+        lines.append(f"\n🔗 {result['url']}")
     else:
-        msg = f"🔍 {product} — Sin stock\n"
-        msg += f"💰 {price}\n"
-        msg += f"🕐 {timestamp}\n"
+        lines.append(f"🔍 {product} — Sin stock")
+        if price:
+            lines.append(f"💰 {price}")
         
         # Show restock dates
         if result["restock_dates"]:
             dates = list(set(result["restock_dates"]))
-            msg += f"\n📅 Próximas fechas de reabastecimiento:\n"
+            lines.append(f"\n📅 Próximas fechas de reabastecimiento:")
             for d in dates:
-                msg += f"   • {d}\n"
+                lines.append(f"   • {d}")
         
         # Show store statuses
-        msg += "\n📍 Estado por tienda:\n"
-        for sid, store in result["stores"].items():
-            status = store["status"]
-            qty = store.get("quantity")
-            qty_str = f" ({qty} unidades)" if qty is not None else ""
-            msg += f"   • Tienda {sid}: {status}{qty_str}\n"
-            if store["restock_dates"]:
-                msg += f"     Próximo stock: {', '.join(store['restock_dates'])}\n"
+        if result["stores"]:
+            lines.append("\n📍 Estado por tienda:")
+            for sid, store in result["stores"].items():
+                status = store["status"]
+                qty = store.get("quantity")
+                qty_str = f" ({qty} unidades)" if qty is not None else ""
+                lines.append(f"   • Tienda {sid}: {status}{qty_str}")
+                if store["restock_dates"]:
+                    lines.append(f"     Próximo stock: {', '.join(store['restock_dates'])}")
     
-    return msg
+    return "\n".join(lines)
 
 
-def send_notification(message, priority="high"):
-    """Send notification via ntfy.sh."""
-    headers = {"Title": f"IKEA Stock: {PRODUCT_NAME}"}
+def send_notification(messages, title):
+    """Send notification via ntfy.sh with one or more messages."""
+    if not messages:
+        return
+    
+    # Build the message body (limit to a reasonable size)
+    body = "\n\n".join(messages)
+    if len(body) > 3900:  # ntfy has a 4096 byte limit, keep under
+        body = body[:3900] + "\n... (truncado)"
+    
+    # HTTP headers must be latin-1 encodable, so strip non-latin-1 chars from title
+    safe_title = title.encode("latin-1", errors="replace").decode("latin-1")
+    headers = {"Title": safe_title}
     if NTFY_TOKEN:
         headers["Authorization"] = f"Bearer {NTFY_TOKEN}"
     
     try:
         resp = requests.post(
             NTFY_URL,
-            data=message.encode("utf-8"),
+            data=body.encode("utf-8"),
             headers=headers,
             timeout=10,
         )
@@ -283,67 +333,92 @@ def send_notification(message, priority="high"):
         return False
 
 
-def log_result(result):
+def log_result(result, timestamp):
     """Append result to a log file for tracking."""
-    log_dir = os.path.dirname(os.path.abspath(__file__))
-    log_file = os.path.join(log_dir, "stock_log.jsonl")
+    log_file = os.path.join(SCRIPT_DIR, "stock_log.jsonl")
     
     entry = {
-        "timestamp": datetime.now().isoformat(),
-        "item_number": ITEM_NUMBER,
-        "any_in_stock": result["any_in_stock"] if result else None,
-        "is_online_sellable": result["is_online_sellable"] if result else None,
-        "stores": result.get("stores", {}) if result else {},
+        "timestamp": timestamp,
+        "item_number": result["item_number"],
+        "product_name": result["product_name"],
+        "any_in_stock": result["any_in_stock"],
+        "is_online_sellable": result["is_online_sellable"],
+        "stores": result.get("stores", {}),
     }
     
     try:
         with open(log_file, "a") as f:
-            f.write(json.dumps(entry) + "\n")
-        print(f"  📝 Logged to {log_file}")
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except IOError as e:
         print(f"  ⚠️  Could not write log: {e}")
 
 
 def main():
     """Main entry point."""
+    now = datetime.now()
     print("=" * 60)
     print(f"IKEA Mexico Stock Checker")
-    print(f"Product: {PRODUCT_NAME}")
-    print(f"Item: {ITEM_NUMBER}")
+    print(f"Time: {now.strftime('%d/%m/%Y %H:%M')}")
     print(f"Notification: {NTFY_URL}")
     print("=" * 60)
     
-    # Fetch availability
-    data = fetch_availability()
-    if data is None:
-        msg = f"❌ Error al verificar disponibilidad de {PRODUCT_NAME}"
-        print(f"\n{msg}")
-        send_notification(msg, priority="low")
+    # Load products
+    products = load_products()
+    if not products:
+        print("  ERROR: No products to check. Exiting.")
         sys.exit(1)
     
-    # Analyze stock
-    result = analyze_stock(data)
+    # Check each product
+    results = []
+    errors = []
+    for product in products:
+        data = fetch_availability(product)
+        if data is None:
+            errors.append(product["name"])
+            continue
+        result = analyze_stock(data, product)
+        if result:
+            results.append(result)
+            log_result(result, now.isoformat())
     
-    # Format and show message
-    message = format_message(result)
-    print(f"\n{message}\n")
+    # Build messages
+    in_stock_msgs = []
+    out_stock_msgs = []
+    for r in results:
+        msg = format_message(r)
+        if r["any_in_stock"]:
+            in_stock_msgs.append(msg)
+        else:
+            out_stock_msgs.append(msg)
     
-    # Log result
-    log_result(result)
+    # Print summary
+    print(f"\n--- RESULTADO ---")
+    for r in results:
+        status = "✅ EN STOCK" if r["any_in_stock"] else "❌ Sin stock"
+        print(f"{status}: {r['product_name']}")
+    if errors:
+        print(f"⚠️  Error al verificar: {', '.join(errors)}")
+    print("--- FIN ---")
     
-    # Send notification if in stock
-    if result and result["any_in_stock"]:
-        send_notification(message, priority="high")
+    # Send notifications
+    if in_stock_msgs:
+        send_notification(in_stock_msgs, "🎉 IKEA: ¡Stock disponible!")
         print("\n🎉 STOCK FOUND! Notification sent!")
     else:
-        print("\n😴 Still out of stock. No notification sent.")
+        print("\n😴 Todos los productos sin stock. No se envió notificación.")
     
-    # Always print the message for GitHub Actions logs
-    print("\n--- MESSAGE ---")
-    print(message)
-    print("--- END ---")
+    # Send daily summary if there are out-of-stock products (helps verify the bot works)
+    if out_stock_msgs and not in_stock_msgs:
+        # Only send a brief summary when a product is newly out of stock? 
+        # For now, skip to avoid daily spam - only notify on stock or errors
+        pass
     
-    return 0 if result else 1
+    # If there were errors, notify
+    if errors and not in_stock_msgs:
+        msg = f"⚠️ Error al verificar: {', '.join(errors)}\nRevisa los logs de GitHub Actions."
+        send_notification([msg], "IKEA Stock Checker: Error")
+    
+    return 0 if (results and not in_stock_msgs) else (1 if in_stock_msgs else 2)
 
 
 if __name__ == "__main__":
