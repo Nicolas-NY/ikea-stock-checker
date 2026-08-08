@@ -6,7 +6,6 @@ Monitorea la disponibilidad de productos IKEA México y recibe notificaciones cu
 
 | Producto | Artículo | Enlace |
 |----------|----------|--------|
-| RÅDMANSÖ Base de cama King (café efecto nogal) | 20601053 | [Ver](https://www.ikea.com/mx/es/p/radmansoe-base-de-cama-cafe-efecto-nogal-20601053/) |
 | RÅDMANSÖ Mueble de TV (café efecto nogal) | 80598986 | [Ver](https://www.ikea.com/mx/es/p/radmansoe-mueble-de-tv-cafe-efecto-nogal-80598986/) |
 
 > **¿Quieres agregar o quitar productos?** Edita el archivo `products.json` con el número de artículo y nombre de cada producto.
